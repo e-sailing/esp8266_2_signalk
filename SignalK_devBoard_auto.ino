@@ -10,9 +10,6 @@ SignalK node
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 
 #include <WiFiUdp.h>
-#include <DateTime.h>
-#include <time.h>
-#include <utime.h>
 #include <dht11.h>
 
 char OP_mmsi[40];
@@ -34,11 +31,7 @@ char pass[] = "12345678";
 String humidity_skt = "environment.outside.humidity";
 String h_temp_skt = "environment.outside.temperature";
 
-unsigned int localPort = 2390;
-IPAddress timeServerIP;
-const int NTP_PACKET_SIZE = 48;
-time_t lastsync;
-byte packetBuffer[NTP_PACKET_SIZE];
+IPAddress ServerIP;
 WiFiUDP udp;
 
 unsigned long secsSince1900 = 0;
@@ -177,79 +170,15 @@ void setup()
       }
     }
   }
-
   Serial.print("local ip:");
-  Serial.print(WiFi.localIP());
-
-  
-  Serial.print("  to server ip:");
-  timeServerIP = WiFi.dnsIP();
-  Serial.println(timeServerIP);
-	Serial.print("Starting UDP on ");
-	udp.begin(localPort);
-	Serial.print("Local port: ");
-	Serial.println(udp.localPort());
-
-  DateTime.sync(86400);
-  DateTime.now();
-
-  int i = 0;
-  while ( DateTime.now() <= 86400 && i<10) {
-    get_ntp();
-    delay(400);
-    i++;
-  };
-}
-
-void get_ntp()
-{
-	//get a random server from the pool
-	sendNTPpacket(timeServerIP); // send an NTP packet to a time server
-								 // wait to see if a reply is available
-	int cb = udp.parsePacket();
-	if (!cb) {
-		Serial.println("no packet yet");
-	}
-	else {
-		Serial.print("packet received, length=");
-		Serial.println(cb);
-		// We've received a packet, read the data from it
-		udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-
-												 //the timestamp starts at byte 40 of the received packet and is four bytes,
-												 // or two words, long. First, esxtract the two words:
-
-		unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-		unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-		// combine the four bytes (two words) into a long integer
-		// this is NTP time (seconds since Jan 1 1900):
-		secsSince1900 = highWord << 16 | lowWord;
-		Serial.print("Seconds since Jan 1 1900 = ");
-		Serial.println(secsSince1900);
-		// now convert NTP time into everyday time:
-		Serial.print("Unix time = ");
-		// Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-		const unsigned long seventyYears = 2208988800UL;
-		// subtract seventy years:
-		time_t epoch = secsSince1900 - seventyYears;
-    Serial.println(epoch);
-    DateTime.sync(epoch);
-    DateTime.available();
-    lastsync = DateTime.now();
-    
-		char buffer[80];
-		sprintf(buffer, "%04d-%02d-%02dT%02d:%02d:%02d.000Z", DateTime.Year+1900, DateTime.Month+1, DateTime.Day, DateTime.Hour, DateTime.Minute, DateTime.Second );
-		Serial.println(buffer);
-	}
+  Serial.println(WiFi.localIP());
+  Serial.print("Server IP:");
+  ServerIP = WiFi.dnsIP();
+  Serial.println(ServerIP);
 }
 
 void loop()
 {
-  time_t now_t = DateTime.now();
-  if (lastsync+3600<now_t){
-    get_ntp();
-  }
-	
 	int chk;
 	chk = DHT.read(DHT11_PIN);    // READ DATA
 	switch (chk) {
@@ -267,48 +196,20 @@ void loop()
 		break;
 	}
 
-  DateTime.available();
-  char timebuf[30];
-  sprintf(timebuf, "%04d-%02d-%02dT%02d:%02d:%02d.000Z", DateTime.Year+1900, DateTime.Month+1, DateTime.Day, DateTime.Hour, DateTime.Minute, DateTime.Second );
-  String timestamp(timebuf);
   String strOP_mmsi(OP_mmsi);
 	String Erg = "";
 	Erg += "{\"path\":\"" + humidity_skt + "\",\"value\":" + String(DHT.humidity) + "},";
 	Erg += "{\"path\":\"" + h_temp_skt + "\",\"value\":" + String(DHT.temperature + 273.15) + "}]}]}\n";
 
-
-	String SignalK = "{\"context\": \"vessels.urn:mrn:imo:mmsi:" + strOP_mmsi + "\",\"updates\":[{\"source\":{\"type\": \"ESP\",\"src\":\"DHT11\"},\"timestamp\":\"" + timestamp + "\",\"values\":[" + Erg;
+  String SignalK = "{\"mmsi\":\"" + strOP_mmsi + "\",\"updates\":[{\"source\":{\"type\":\"ESP\",\"src\":\"DHT11\"},\"values\":[" + Erg;
   const char *SignalKc = SignalK.c_str();
 
-	Serial.print(SignalK);
+	Serial.print(SignalKc);
 	
-	udp.beginPacket(timeServerIP, 55557);
+	udp.beginPacket(ServerIP, 55557);
 	udp.write(SignalKc);
 	udp.endPacket();
 
 	delay(1000);
 }
 
-unsigned long sendNTPpacket(IPAddress& address)
-{
-	Serial.println("sending NTP packet...");
-	// set all bytes in the buffer to 0
-	memset(packetBuffer, 0, NTP_PACKET_SIZE);
-	// Initialize values needed to form NTP request
-	// (see URL above for details on the packets)
-	packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-	packetBuffer[1] = 0;     // Stratum, or type of clock
-	packetBuffer[2] = 6;     // Polling Interval
-	packetBuffer[3] = 0xEC;  // Peer Clock Precision
-							 // 8 bytes of zero for Root Delay & Root Dispersion
-	packetBuffer[12] = 49;
-	packetBuffer[13] = 0x4E;
-	packetBuffer[14] = 49;
-	packetBuffer[15] = 52;
-
-	// all NTP fields have been given values, now
-	// you can send a packet requesting a timestamp:
-	udp.beginPacket(address, 123); //NTP requests are to port 123
-	udp.write(packetBuffer, NTP_PACKET_SIZE);
-	udp.endPacket();
-}
